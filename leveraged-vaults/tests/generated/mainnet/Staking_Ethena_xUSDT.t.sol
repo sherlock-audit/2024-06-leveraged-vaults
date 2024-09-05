@@ -66,6 +66,7 @@ contract Test_Staking_Ethena_xUSDT is BaseStakingTest {
         deleverageCollateralDecreaseRatio = 925;
         defaultLiquidationDiscount = 952;
         withdrawLiquidationDiscount = 952;
+        splitWithdrawPriceDecrease = 610;
 
         super.setUp();
     }

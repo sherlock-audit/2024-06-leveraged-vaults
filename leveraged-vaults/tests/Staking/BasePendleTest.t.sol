@@ -13,6 +13,23 @@ abstract contract BasePendleTest is BaseStakingTest {
         expires = IPMarket(PendleStakingHarness(address(harness)).marketAddress()).expiry();
     }
 
+    function test_PendlePTOracle_getPrice_postExpiry() public {
+        vm.warp(expires);
+        setMaxOracleFreshness();
+
+        // tokenOutSy to usd rate should be the expiry price
+        (int256 tokenOutSyPrice, /* */) = Deployments.TRADING_MODULE.getOraclePrice(
+            PendleStakingHarness(address(harness)).borrowToken(),
+            PendleStakingHarness(address(harness)).tokenOutSy()
+        );
+        (int256 ptExpiryPrice, /* */) = Deployments.TRADING_MODULE.getOraclePrice(
+            PendleStakingHarness(address(harness)).ptAddress(),
+            PendleStakingHarness(address(harness)).tokenOutSy()
+        );
+
+        assertApproxEqRel(tokenOutSyPrice, ptExpiryPrice, 0.005e18, "tokenOutSyPrice should be the expiry price");
+    }
+
     function test_RevertIf_accountEntry_postExpiry(uint8 maturityIndex) public {
         vm.warp(expires);
         address account = makeAddr("account");
@@ -88,7 +105,7 @@ abstract contract BasePendleTest is BaseStakingTest {
             _forceWithdraw(account);
         } else {
             vm.prank(account);
-            v().initiateWithdraw();
+            v().initiateWithdraw("");
         }
         finalizeWithdrawRequest(account);
 

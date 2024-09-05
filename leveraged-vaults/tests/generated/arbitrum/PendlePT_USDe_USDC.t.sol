@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import "../../Staking/harness/index.sol";
 import {WithdrawRequestNFT} from "@contracts/vaults/staking/protocols/EtherFi.sol";
+import {WithdrawManager} from "@contracts/vaults/staking/protocols/Kelp.sol";
 import {
     PendleDepositParams,
     IPRouter,
@@ -11,6 +12,8 @@ import {
 import {PendlePTOracle} from "@contracts/oracles/PendlePTOracle.sol";
 import "@interfaces/chainlink/AggregatorV2V3Interface.sol";
 import { PendlePTGeneric } from "@contracts/vaults/staking/PendlePTGeneric.sol";
+
+
 
 contract Test_PendlePT_USDe_USDC is BasePendleTest {
     function setUp() public override {
@@ -29,6 +32,7 @@ contract Test_PendlePT_USDe_USDC is BasePendleTest {
         deleverageCollateralDecreaseRatio = 925;
         defaultLiquidationDiscount = 955;
         withdrawLiquidationDiscount = 945;
+        splitWithdrawPriceDecrease = 610;
 
         super.setUp();
     }
@@ -72,8 +76,8 @@ contract Harness_PendlePT_USDe_USDC is PendleStakingHarness {
     function getRequiredOracles() public override view returns (
         address[] memory token, address[] memory oracle
     ) {
-        token = new address[](2);
-        oracle = new address[](2);
+        token = new address[](3);
+        oracle = new address[](3);
 
         // Custom PT Oracle
         token[0] = ptAddress;
@@ -82,6 +86,9 @@ contract Harness_PendlePT_USDe_USDC is PendleStakingHarness {
         // USDC
         token[1] = 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
         oracle[1] = 0x50834F3163758fcC1Df9973b6e91f0F0F0434aD3;
+        // USDe
+        token[2] = 0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34;
+        oracle[2] = 0x88AC7Bca36567525A866138F03a6F6844868E0Bc;
         
     }
 
@@ -118,10 +125,10 @@ contract Harness_PendlePT_USDe_USDC is PendleStakingHarness {
         twapDuration = 15 minutes; // recommended 15 - 30 min
         useSyOracleRate = true;
         baseToUSDOracle = 0x88AC7Bca36567525A866138F03a6F6844868E0Bc;
-        
-        tokenInSy = 0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34;
         borrowToken = 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
         tokenOutSy = 0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34;
+
+        tokenInSy = 0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34;
         redemptionToken = 0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34;
         
 

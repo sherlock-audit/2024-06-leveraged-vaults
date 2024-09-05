@@ -2,7 +2,9 @@
 pragma solidity 0.8.24;
 
 import {Constants} from "@contracts/global/Constants.sol";
+import {VaultAccount} from "@contracts/global/Types.sol";
 import {TypeConvert} from "@contracts/global/TypeConvert.sol";
+import {TokenUtils} from "@contracts/utils/TokenUtils.sol";
 import {Deployments} from "@deployments/Deployments.sol";
 import {VaultStorage, WithdrawRequest, SplitWithdrawRequest} from "./VaultStorage.sol";
 
@@ -31,7 +33,8 @@ abstract contract WithdrawRequestBase {
     function _initiateWithdrawImpl(
         address account,
         uint256 vaultShares,
-        bool isForced
+        bool isForced,
+        bytes calldata data
     ) internal virtual returns (uint256 requestId);
 
     /// @notice Required implementation to finalize the withdraw
@@ -59,7 +62,7 @@ abstract contract WithdrawRequestBase {
     }
 
     function _getValueOfWithdrawRequest(
-        WithdrawRequest memory w, uint256 stakeAssetPrice
+        uint256 requestId, uint256 totalVaultShares, uint256 stakeAssetPrice
     ) internal virtual view returns (uint256);
 
     function _getValueOfSplitFinalizedWithdrawRequest(
@@ -76,8 +79,11 @@ abstract contract WithdrawRequestBase {
             // Otherwise, apply the proper exchange rate
             (int256 rate, /* */) = Deployments.TRADING_MODULE.getOraclePrice(redeemToken, borrowToken);
 
-            return (s.totalWithdraw * rate.toUint() * w.vaultShares) / 
-                (s.totalVaultShares * Constants.EXCHANGE_RATE_PRECISION);
+            uint256 borrowPrecision = 10 ** TokenUtils.getDecimals(borrowToken);
+            uint256 redeemPrecision = 10 ** TokenUtils.getDecimals(redeemToken);
+
+            return (s.totalWithdraw * rate.toUint() * w.vaultShares * borrowPrecision) /
+                (s.totalVaultShares * Constants.EXCHANGE_RATE_PRECISION * redeemPrecision);
         }
     }
 
@@ -97,23 +103,25 @@ abstract contract WithdrawRequestBase {
             SplitWithdrawRequest memory s = VaultStorage.getSplitWithdrawRequest()[w.requestId];
             if (s.finalized) {
                 return _getValueOfSplitFinalizedWithdrawRequest(w, s, borrowToken, redeemToken);
+            } else {
+                uint256 totalValue = _getValueOfWithdrawRequest(w.requestId, s.totalVaultShares, stakeAssetPrice);
+                // Scale the total value of the withdraw request to the account's share of the request
+                return totalValue * w.vaultShares / s.totalVaultShares;
             }
         }
 
-        // In every other case, including the case when the withdraw request has split, the vault shares
-        // in the withdraw request (`w`) are marked at the amount of vault shares the account holds.
-        return _getValueOfWithdrawRequest(w, stakeAssetPrice);
+        return _getValueOfWithdrawRequest(w.requestId, w.vaultShares, stakeAssetPrice);
     }
 
     /// @notice Initiates a withdraw request of all vault shares
-    function _initiateWithdraw(address account, bool isForced) internal {
+    function _initiateWithdraw(address account, bool isForced, bytes calldata data) internal {
         uint256 vaultShares = Deployments.NOTIONAL.getVaultAccount(account, address(this)).vaultShares;
         require(0 < vaultShares);
 
         WithdrawRequest storage accountWithdraw = VaultStorage.getAccountWithdrawRequest()[account];
         require(accountWithdraw.requestId == 0, "Existing Request");
 
-        uint256 requestId = _initiateWithdrawImpl(account, vaultShares, isForced);
+        uint256 requestId = _initiateWithdrawImpl(account, vaultShares, isForced, data);
         accountWithdraw.requestId = requestId;
         accountWithdraw.hasSplit = false;
         accountWithdraw.vaultShares = vaultShares;
@@ -215,24 +223,34 @@ abstract contract WithdrawRequestBase {
             VaultStorage.getSplitWithdrawRequest()[w.requestId].totalVaultShares = w.vaultShares;
         }
 
-        if (w.vaultShares == vaultShares) {
+        // Ensure that no withdraw request gets overridden, the _to account always receives their withdraw
+        // request in the account withdraw slot. All storage is updated prior to changes to the `w` storage
+        // variable below.
+        WithdrawRequest storage toWithdraw = VaultStorage.getAccountWithdrawRequest()[_to];
+        require(toWithdraw.requestId == 0 || toWithdraw.requestId == w.requestId , "Existing Request");
+        toWithdraw.requestId = w.requestId;
+        toWithdraw.hasSplit = true;
+
+        if (w.vaultShares < vaultShares) {
+            // This should never occur given the checks below.
+            revert("Invalid Split");
+        } else if (w.vaultShares == vaultShares) {
             // If the resulting vault shares is zero, then delete the request. The _from account's
-            // withdraw request is fully transferred to _to
+            // withdraw request is fully transferred to _to. In this case, the _to account receives
+            // the full amount of the _from account's withdraw request.
+            toWithdraw.vaultShares = toWithdraw.vaultShares + w.vaultShares;
             delete VaultStorage.getAccountWithdrawRequest()[_from];
         } else {
-            // Otherwise deduct the vault shares
+            // In this case, the amount of vault shares is transferred from one account to the other.
+            toWithdraw.vaultShares = toWithdraw.vaultShares + vaultShares;
             w.vaultShares = w.vaultShares - vaultShares;
             w.hasSplit = true;
         }
 
-        // Ensure that no withdraw request gets overridden, the _to account always receives their withdraw
-        // request in the account withdraw slot.
-        WithdrawRequest storage toWithdraw = VaultStorage.getAccountWithdrawRequest()[_to];
-        require(toWithdraw.requestId == 0 || toWithdraw.requestId == w.requestId , "Existing Request");
-
-        // Either the request gets set or it gets incremented here.
-        toWithdraw.requestId = w.requestId;
-        toWithdraw.vaultShares = toWithdraw.vaultShares + vaultShares;
-        toWithdraw.hasSplit = true;
+        // Prevents an edge case where a liquidator is able to hold both vault shares and a withdraw request
+        // at the same time. This allows a liquidator to liquidate an account's withdraw request multiple times
+        // but it cannot have any vault shares outside of that withdraw request.
+        VaultAccount memory toVaultAccount = Deployments.NOTIONAL.getVaultAccount(_to, address(this));
+        require(toVaultAccount.vaultShares == toWithdraw.vaultShares, "Invalid Liquidator");
     }
 }

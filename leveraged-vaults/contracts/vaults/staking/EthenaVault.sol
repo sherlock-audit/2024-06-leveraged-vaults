@@ -78,13 +78,13 @@ contract EthenaVault is BaseStakingVault {
 
     /// @notice Returns the value of a withdraw request in terms of the borrowed token
     function _getValueOfWithdrawRequest(
-        WithdrawRequest memory w, uint256 /* */
+       uint256 requestId, uint256 /* totalVaultShares */, uint256 /* stakeAssetPrice */
     ) internal override view returns (uint256) {
-        return EthenaLib._getValueOfWithdrawRequest(w, BORROW_TOKEN, BORROW_PRECISION);
+        return EthenaLib._getValueOfWithdrawRequest(requestId, BORROW_TOKEN, BORROW_PRECISION);
     }
 
     function _initiateWithdrawImpl(
-        address /* account */, uint256 vaultSharesToRedeem, bool /* isForced */
+        address /* account */, uint256 vaultSharesToRedeem, bool /* isForced */, bytes calldata /* data */
     ) internal override returns (uint256 requestId) {
         uint256 balanceToTransfer = getStakingTokensForVaultShare(vaultSharesToRedeem);
         return EthenaLib._initiateWithdrawImpl(balanceToTransfer, HOLDER_IMPLEMENTATION);

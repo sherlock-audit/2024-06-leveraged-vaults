@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import "../../Staking/harness/index.sol";
 import {WithdrawRequestNFT} from "@contracts/vaults/staking/protocols/EtherFi.sol";
+import {WithdrawManager} from "@contracts/vaults/staking/protocols/Kelp.sol";
 import {
     PendleDepositParams,
     IPRouter,
@@ -11,6 +12,8 @@ import {
 import {PendlePTOracle} from "@contracts/oracles/PendlePTOracle.sol";
 import "@interfaces/chainlink/AggregatorV2V3Interface.sol";
 import { PendlePTEtherFiVault } from "@contracts/vaults/staking/PendlePTEtherFiVault.sol";
+
+
 
 contract Test_PendlePT_weETH_ETH is BasePendleTest {
     function setUp() public override {
@@ -28,6 +31,7 @@ contract Test_PendlePT_weETH_ETH is BasePendleTest {
         deleverageCollateralDecreaseRatio = 920;
         defaultLiquidationDiscount = 955;
         withdrawLiquidationDiscount = 945;
+        splitWithdrawPriceDecrease = 610;
 
         super.setUp();
     }
@@ -116,6 +120,8 @@ contract Harness_PendlePT_weETH_ETH is PendleStakingHarness {
         twapDuration = 15 minutes; // recommended 15 - 30 min
         useSyOracleRate = true;
         baseToUSDOracle = 0xE47F6c47DE1F1D93d8da32309D4dB90acDadeEaE;
+        borrowToken = 0x0000000000000000000000000000000000000000;
+        tokenOutSy = 0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee;
         
 
         UniV3Adapter.UniV3SingleData memory d;

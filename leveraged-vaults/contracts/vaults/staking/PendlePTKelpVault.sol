@@ -5,11 +5,12 @@ import {Constants} from "@contracts/global/Constants.sol";
 import {TypeConvert} from "@contracts/global/TypeConvert.sol";
 import {Deployments} from "@deployments/Deployments.sol";
 import {PendlePrincipalToken, WithdrawRequest} from "./protocols/PendlePrincipalToken.sol";
-import { KelpLib, KelpCooldownHolder, rsETH, stETH } from "./protocols/Kelp.sol";
+import { KelpLib, KelpCooldownHolder, rsETH} from "./protocols/Kelp.sol";
 
 contract PendlePTKelpVault is PendlePrincipalToken {
     using TypeConvert for int256;
     address public HOLDER_IMPLEMENTATION;
+    uint256 internal constant rsETH_PRECISION = 1e18;
 
     constructor(
         address marketAddress,
@@ -40,9 +41,13 @@ contract PendlePTKelpVault is PendlePrincipalToken {
 
     /// @notice Returns the value of a withdraw request in terms of the borrowed token
     function _getValueOfWithdrawRequest(
-        WithdrawRequest memory w, uint256 /* */
+        uint256 requestId, uint256 /* totalVaultShares */, uint256 /* stakeAssetPrice */
     ) internal override view returns (uint256) {
-        return KelpLib._getValueOfWithdrawRequest(w, BORROW_TOKEN, BORROW_PRECISION);
+        uint256 tokenOutSY = getTokenOutSYForWithdrawRequest(requestId);
+        // NOTE: in this vault the tokenOutSy is known to be rsETH.
+        (int256 ethPrice, /* */) = TRADING_MODULE.getOraclePrice(TOKEN_OUT_SY, BORROW_TOKEN);
+        return (tokenOutSY * ethPrice.toUint() * BORROW_PRECISION) /
+            (rsETH_PRECISION * Constants.EXCHANGE_RATE_PRECISION);
     }
 
     function _initiateSYWithdraw(
@@ -61,11 +66,4 @@ contract PendlePTKelpVault is PendlePrincipalToken {
         return KelpLib._canFinalizeWithdrawRequest(requestId);
     }
 
-    function canTriggerExtraStep(uint256 requestId) public view returns (bool) {
-        return KelpLib._canTriggerExtraStep(requestId);
-    }
-
-    function triggerExtraStep(uint256 requestId) external {
-        KelpLib._triggerExtraStep(requestId);
-    }
 }
