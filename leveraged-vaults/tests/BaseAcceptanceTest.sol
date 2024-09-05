@@ -62,7 +62,9 @@ abstract contract BaseAcceptanceTest is Test {
         // NOTE: everything needs to run after create select fork
         deployCodeTo("VaultRewarderLib.sol", Deployments.VAULT_REWARDER_LIB);
         if (Deployments.CHAIN_ID == 1) {
-            vm.startPrank(0x22341fB5D92D3d801144aA5A925F401A91418A05);
+            if (FORK_BLOCK < 20492800) vm.startPrank(0x22341fB5D92D3d801144aA5A925F401A91418A05);
+            else vm.startPrank(Deployments.NOTIONAL.owner());
+
             address tradingModule = address(new TradingModule(Deployments.NOTIONAL, Deployments.TRADING_MODULE));
             // NOTE: fixes curve router
             UUPSUpgradeable(address(Deployments.TRADING_MODULE)).upgradeTo(tradingModule);
@@ -671,14 +673,18 @@ abstract contract BaseAcceptanceTest is Test {
     }
 
     function enterVaultLiquidation(address account, uint256 maturity, uint256 collateralRatio) internal returns (uint256) {
-        uint256 depositAmountExternal;
+        VaultConfig memory c = Deployments.NOTIONAL.getVaultConfig(address(vault));
+        uint256 depositAmountExternal = uint256(c.minAccountBorrowSize) * precision / 1e8;
+        return enterVaultLiquidation(account, maturity, collateralRatio, depositAmountExternal);
+    }
+
+    function enterVaultLiquidation(address account, uint256 maturity, uint256 collateralRatio, uint256 depositAmountExternal) internal returns (uint256) {
         uint256 borrowAmountExternal;
         uint256 borrowAmount;
         bytes memory depositParams;
         {
             depositParams = getDepositParams(depositAmountExternal, maturity);
             VaultConfig memory c = Deployments.NOTIONAL.getVaultConfig(address(vault));
-            depositAmountExternal = uint256(c.minAccountBorrowSize) * precision / 1e8;
             borrowAmountExternal = depositAmountExternal * 1e9 / collateralRatio;
 
             if (maturity == Constants.PRIME_CASH_VAULT_MATURITY) {

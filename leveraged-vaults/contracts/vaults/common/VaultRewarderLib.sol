@@ -13,8 +13,9 @@ import {
     IConvexRewardPoolArbitrum
 } from "../../../interfaces/convex/IConvexRewardPool.sol";
 import {IAuraRewardPool} from "../../../interfaces/aura/IAuraRewardPool.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract VaultRewarderLib is IVaultRewarder {
+contract VaultRewarderLib is IVaultRewarder, ReentrancyGuard {
     using TypeConvert for uint256;
 
     /// @notice Returns the current reward claim method and reward state
@@ -133,7 +134,7 @@ contract VaultRewarderLib is IVaultRewarder {
 
     /// @notice Claims all the rewards for the entire vault and updates the accumulators. Does not
     /// update emission rewarders since those are automatically updated on every account claim.
-    function claimRewardTokens() external {
+    function claimRewardTokens() external nonReentrant {
         // Ensures that this method is not called from inside a vault account action.
         require(msg.sender != address(Deployments.NOTIONAL));
         // This method is not executed from inside enter or exit vault positions, so this total
@@ -192,7 +193,7 @@ contract VaultRewarderLib is IVaultRewarder {
 
     /// @notice Callable by an account to claim their own rewards, we know that the vault shares have
     /// not changed in this transaction because the contract has not been called by Notional
-    function claimAccountRewards(address account) external override {
+    function claimAccountRewards(address account) external nonReentrant override {
         require(msg.sender == account);
         uint256 totalVaultSharesBefore = VaultStorage.getStrategyVaultState().totalVaultSharesGlobal;
         uint256 vaultSharesBefore = _getVaultSharesBefore(account);
@@ -313,16 +314,18 @@ contract VaultRewarderLib is IVaultRewarder {
             // prevent normal vault operations from working. Failures may include a
             // lack of balances or some sort of blacklist that prevents an account
             // from receiving tokens.
-            try IEIP20NonStandard(rewardToken).transfer(account, rewardToClaim) {
-                bool success = TokenUtils.checkReturnCode();
-                if (success) {
-                    emit VaultRewardTransfer(rewardToken, account, rewardToClaim);
-                } else {
+            if (rewardToken.code.length > 0) {
+                try IEIP20NonStandard(rewardToken).transfer(account, rewardToClaim) {
+                    bool success = TokenUtils.checkReturnCode();
+                    if (success) {
+                        emit VaultRewardTransfer(rewardToken, account, rewardToClaim);
+                    } else {
+                        emit VaultRewardTransfer(rewardToken, account, 0);
+                    }
+                // Emits zero tokens transferred if the transfer fails.
+                } catch {
                     emit VaultRewardTransfer(rewardToken, account, 0);
                 }
-            // Emits zero tokens transferred if the transfer fails.
-            } catch {
-                emit VaultRewardTransfer(rewardToken, account, 0);
             }
         }
     }

@@ -32,18 +32,17 @@ contract EthenaCooldownHolder is ClonedCoolDownHolder {
     /// @notice There is no way to stop a cool down
     function _stopCooldown() internal pure override { revert(); }
 
-    function _startCooldown() internal override {
+    function _startCooldown(uint256 cooldownBalance) internal override {
         uint24 duration = sUSDe.cooldownDuration();
-        uint256 balance = sUSDe.balanceOf(address(this));
         if (duration == 0) {
             // If the cooldown duration is set to zero, can redeem immediately
-            sUSDe.redeem(balance, address(this), address(this));
+            sUSDe.redeem(cooldownBalance, address(this), address(this));
         } else {
             // If we execute a second cooldown while one exists, the cooldown end
             // will be pushed further out. This holder should only ever have one
             // cooldown ever.
             require(sUSDe.cooldowns(address(this)).cooldownEnd == 0);
-            sUSDe.cooldownShares(balance);
+            sUSDe.cooldownShares(cooldownBalance);
         }
     }
 
@@ -56,13 +55,15 @@ contract EthenaCooldownHolder is ClonedCoolDownHolder {
             return (0, false);
         }
 
+        uint256 balanceBefore = USDe.balanceOf(address(this));
         // If a cooldown has been initiated, need to call unstake to complete it. If
         // duration was set to zero then the USDe will be on this contract already.
         if (0 < userCooldown.cooldownEnd) sUSDe.unstake(address(this));
+        uint256 balanceAfter = USDe.balanceOf(address(this));
 
         // USDe is immutable. It cannot have a transfer tax and it is ERC20 compliant
         // so we do not need to use the additional protections here.
-        tokensClaimed = USDe.balanceOf(address(this));
+        tokensClaimed = balanceAfter - balanceBefore;
         USDe.transfer(vault, tokensClaimed);
         finalized = true;
     }
@@ -75,11 +76,11 @@ library EthenaLib {
     uint256 internal constant USDE_PRECISION = 1e18;
 
     function _getValueOfWithdrawRequest(
-        WithdrawRequest memory w,
+        uint256 requestId,
         address borrowToken,
         uint256 borrowPrecision
     ) internal view returns (uint256) {
-        address holder = address(uint160(w.requestId));
+        address holder = address(uint160(requestId));
         // This valuation is the amount of USDe the account will receive at cooldown, once
         // a cooldown is initiated the account is no longer receiving sUSDe yield. This balance
         // of USDe is transferred to a Silo contract and guaranteed to be available once the
@@ -106,7 +107,7 @@ library EthenaLib {
     ) internal returns (uint256 requestId) {
         EthenaCooldownHolder holder = EthenaCooldownHolder(Clones.clone(holderImplementation));
         sUSDe.transfer(address(holder), balanceToTransfer);
-        holder.startCooldown();
+        holder.startCooldown(balanceToTransfer);
 
         return uint256(uint160(address(holder)));
     }
@@ -162,6 +163,7 @@ library EthenaLib {
             // Trades the unwrapped DAI back to the given token.
             (/* */, borrowedCurrencyAmount) = trade._executeTrade(dexId);
         } else {
+            require(minPurchaseAmount <= daiAmount, "Slippage");
             borrowedCurrencyAmount = daiAmount;
         }
     }

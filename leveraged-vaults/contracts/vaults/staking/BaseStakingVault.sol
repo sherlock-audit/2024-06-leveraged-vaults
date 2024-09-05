@@ -10,6 +10,7 @@ import {WithdrawRequestBase, WithdrawRequest, SplitWithdrawRequest} from "../com
 import {BaseStrategyVault, IERC20, NotionalProxy} from "../common/BaseStrategyVault.sol";
 import {ITradingModule, Trade, TradeType} from "@interfaces/trading/ITradingModule.sol";
 import {VaultAccountHealthFactors} from "@interfaces/notional/IVaultController.sol";
+import {ClonedCoolDownHolder} from "@contracts/vaults/staking/protocols/ClonedCoolDownHolder.sol";
 
 struct RedeemParams {
     uint8 dexId;
@@ -246,25 +247,31 @@ abstract contract BaseStakingVault is WithdrawRequestBase, BaseStrategyVault {
     }
 
     /// @notice Allows an account to initiate a withdraw of their vault shares
-    function initiateWithdraw() external {
+    function initiateWithdraw(bytes calldata data) external {
+        _initiateWithdraw({account: msg.sender, isForced: false, data: data});
+
         (VaultAccountHealthFactors memory health, /* */, /* */) = NOTIONAL.getVaultAccountHealthFactors(
             msg.sender, address(this)
         );
         VaultConfig memory config = NOTIONAL.getVaultConfig(address(this));
         // Require that the account is collateralized
         require(config.minCollateralRatio <= health.collateralRatio, "Insufficient Collateral");
-
-        _initiateWithdraw({account: msg.sender, isForced: false});
     }
 
     /// @notice Allows the emergency exit role to force an account to withdraw all their vault shares
-    function forceWithdraw(address account) external onlyRole(EMERGENCY_EXIT_ROLE) {
+    function forceWithdraw(address account, bytes calldata data) external onlyRole(EMERGENCY_EXIT_ROLE) {
         // Forced withdraw will withdraw all vault shares
-        _initiateWithdraw({account: account, isForced: true});
+        _initiateWithdraw({account: account, isForced: true, data: data});
     }
 
     /// @notice Finalizes withdraws manually
     function finalizeWithdrawsManual(address account) external {
         return _finalizeWithdrawsManual(account);
+    }
+
+    function rescueTokens(
+        address cooldownHolder, IERC20 token, address receiver, uint256 amount
+    ) external onlyRole(EMERGENCY_EXIT_ROLE) {
+        ClonedCoolDownHolder(cooldownHolder).rescueTokens(token, receiver, amount);
     }
 }

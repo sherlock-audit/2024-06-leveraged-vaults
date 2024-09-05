@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import "../../Staking/harness/index.sol";
 import {WithdrawRequestNFT} from "@contracts/vaults/staking/protocols/EtherFi.sol";
+import {WithdrawManager} from "@contracts/vaults/staking/protocols/Kelp.sol";
 import {
     PendleDepositParams,
     IPRouter,
@@ -12,9 +13,11 @@ import {PendlePTOracle} from "@contracts/oracles/PendlePTOracle.sol";
 import "@interfaces/chainlink/AggregatorV2V3Interface.sol";
 import { PendlePTGeneric } from "@contracts/vaults/staking/PendlePTGeneric.sol";
 
+
+
 contract Test_PendlePT_rsETH_ETH is BasePendleTest {
     function setUp() public override {
-        FORK_BLOCK = 222513382;
+        FORK_BLOCK = 241486254;
         harness = new Harness_PendlePT_rsETH_ETH();
 
         // NOTE: need to enforce some minimum deposit here b/c of rounding issues
@@ -28,6 +31,7 @@ contract Test_PendlePT_rsETH_ETH is BasePendleTest {
         deleverageCollateralDecreaseRatio = 925;
         defaultLiquidationDiscount = 955;
         withdrawLiquidationDiscount = 945;
+        splitWithdrawPriceDecrease = 610;
 
         super.setUp();
     }
@@ -71,8 +75,8 @@ contract Harness_PendlePT_rsETH_ETH is PendleStakingHarness {
     function getRequiredOracles() public override view returns (
         address[] memory token, address[] memory oracle
     ) {
-        token = new address[](2);
-        oracle = new address[](2);
+        token = new address[](3);
+        oracle = new address[](3);
 
         // Custom PT Oracle
         token[0] = ptAddress;
@@ -81,6 +85,9 @@ contract Harness_PendlePT_rsETH_ETH is PendleStakingHarness {
         // ETH
         token[1] = 0x0000000000000000000000000000000000000000;
         oracle[1] = 0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612;
+        // rsETH
+        token[2] = 0x4186BFC76E2E237523CBC30FD220FE055156b41F;
+        oracle[2] = 0x02551ded3F5B25f60Ea67f258D907eD051E042b2;
         
     }
 
@@ -117,10 +124,10 @@ contract Harness_PendlePT_rsETH_ETH is PendleStakingHarness {
         twapDuration = 15 minutes; // recommended 15 - 30 min
         useSyOracleRate = true;
         baseToUSDOracle = 0x02551ded3F5B25f60Ea67f258D907eD051E042b2;
-        
-        tokenInSy = 0x4186BFC76E2E237523CBC30FD220FE055156b41F;
         borrowToken = 0x0000000000000000000000000000000000000000;
         tokenOutSy = 0x4186BFC76E2E237523CBC30FD220FE055156b41F;
+
+        tokenInSy = 0x4186BFC76E2E237523CBC30FD220FE055156b41F;
         redemptionToken = 0x4186BFC76E2E237523CBC30FD220FE055156b41F;
         
 

@@ -4,6 +4,7 @@ pragma solidity 0.8.24;
 import "../MockOracle.sol";
 import "../BaseAcceptanceTest.sol";
 import "./harness/BaseStakingHarness.sol";
+import "@contracts/vaults/staking/protocols/PendlePrincipalToken.sol";
 import "@deployments/Deployments.sol";
 import "@contracts/vaults/staking/BaseStakingVault.sol";
 import "@contracts/proxy/nProxy.sol";
@@ -15,6 +16,8 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
     int256 deleverageCollateralDecreaseRatio;
     int256 defaultLiquidationDiscount;
     int256 withdrawLiquidationDiscount;
+    int256 borrowTokenPriceIncrease;
+    int256 splitWithdrawPriceDecrease;
 
     function deployTestVault() internal override returns (IStrategyVault) {
         (address impl, /* */) = harness.deployVaultImplementation();
@@ -143,7 +146,7 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
             _forceWithdraw(account);
         } else {
             vm.prank(account);
-            v().initiateWithdraw();
+            v().initiateWithdraw("");
         }
 
         // Cannot enter the vault again because a withdraw is in process
@@ -212,7 +215,7 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
             _forceWithdraw(account);
         } else {
             vm.prank(account);
-            v().initiateWithdraw();
+            v().initiateWithdraw("");
         }
 
         bytes memory params = getRedeemParamsWithdrawRequest(vaultShares, maturity);
@@ -261,11 +264,11 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
 
         vm.prank(accountWithNoShares);
         vm.expectRevert();
-        v().initiateWithdraw();
+        v().initiateWithdraw("");
 
         vm.prank(accountWithNoShares);
         vm.expectRevert();
-        v().initiateWithdraw();
+        v().initiateWithdraw("");
     }
 
     function test_RevertIf_accountWithdraw_unauthorizedAccount() public {
@@ -278,7 +281,7 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
 
         vm.startPrank(makeAddr("unauthorized account"));
         vm.expectRevert();
-        v().initiateWithdraw();
+        v().initiateWithdraw("");
     }
 
     function test_accountWithdraw(
@@ -300,7 +303,7 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
         int256 valueBefore = v().convertStrategyToUnderlying(account, vaultShares, maturity);
 
         vm.startPrank(account);
-        v().initiateWithdraw();
+        v().initiateWithdraw("");
         vm.stopPrank();
         int256 valueAfter = v().convertStrategyToUnderlying(account, vaultShares, maturity);
 
@@ -325,11 +328,11 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
         enterVault(account, depositAmount, maturity, getDepositParams(depositAmount, maturity));
 
         vm.prank(account);
-        v().initiateWithdraw();
+        v().initiateWithdraw("");
 
         vm.prank(account);
         vm.expectRevert("Existing Request");
-        v().initiateWithdraw();
+        v().initiateWithdraw("");
     }
 
     function test_forceWithdraw(
@@ -353,7 +356,7 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
         vm.prank(Deployments.NOTIONAL.owner());
         v().grantRole(keccak256("EMERGENCY_EXIT_ROLE"), admin);
         vm.prank(admin);
-        v().forceWithdraw(account);
+        v().forceWithdraw(account, "");
 
         w = v().getWithdrawRequest(account);
         assertTrue(w.requestId != 0, "7");
@@ -382,12 +385,12 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
         vm.prank(Deployments.NOTIONAL.owner());
         v().grantRole(keccak256("EMERGENCY_EXIT_ROLE"), admin);
         vm.prank(admin);
-        v().forceWithdraw(account);
+        v().forceWithdraw(account, "");
 
 
         vm.prank(account);
         vm.expectRevert("Existing Request");
-        v().initiateWithdraw();
+        v().initiateWithdraw("");
     }
 
     function test_forceWithdraw_initiateNewWithdraw(
@@ -408,7 +411,7 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
         vm.prank(Deployments.NOTIONAL.owner());
         v().grantRole(keccak256("EMERGENCY_EXIT_ROLE"), admin);
         vm.prank(admin);
-        v().forceWithdraw(account);
+        v().forceWithdraw(account, "");
         if (forceFinalizeWithdraw) finalizeWithdrawRequest(account);
         WithdrawRequest memory f = v().getWithdrawRequest(account);
         assertTrue(f.requestId != 0, "4");
@@ -446,11 +449,25 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
         uint256 maturity = maturities[maturityIndex];
         uint256 vaultShares = enterVaultLiquidation(account, maturity);
 
-        _changeCollateralRatio();
+        // Depending on the vault type, we need to change the price of different tokens.
+        try PendlePrincipalToken(payable(address(v()))).TOKEN_OUT_SY() returns (address tokenOutSY) {
+            // Pendle PT tokens have the PT token as the staking token. That will be sold during the
+            // withdraw so we need to change the price of the TOKEN_OUT_SY token.
+            _changeTokenPrice(withdrawLiquidationDiscount, tokenOutSY);
+        } catch {
+            if (address(v().REDEMPTION_TOKEN()) == 0x4c9EDD5852cd905f086C759E8383e09bff1E68B3) {
+                // If USDe then we need to change the price of the redemption token since the
+                // method does not depend on the value of the staking token.
+                _changeTokenPrice(withdrawLiquidationDiscount, v().REDEMPTION_TOKEN());
+            } else {
+                _changeTokenPrice(withdrawLiquidationDiscount, v().STAKING_TOKEN());
+            }
+        }
+
         // attempt to account withdraw
         vm.prank(account);
         vm.expectRevert("Insufficient Collateral");
-        v().initiateWithdraw();
+        v().initiateWithdraw("");
 
         _forceWithdraw(account);
         WithdrawRequest memory w = v().getWithdrawRequest(account);
@@ -507,11 +524,12 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
     function test_deleverageAccount_noWithdrawRequest(uint8 maturityIndex) public {
         maturityIndex = uint8(bound(maturityIndex, 0, 2));
         address account = makeAddr("account");
+        address liquidator = makeAddr("liquidator");
         uint256 maturity = maturities[maturityIndex];
         uint256 vaultShares = enterVaultLiquidation(account, maturity);
 
         _changeCollateralRatio();
-        address liquidator = _liquidateAccount(account);
+        _liquidateAccount(account, liquidator);
 
         (VaultAccount memory vaultAccount) = Deployments.NOTIONAL.getVaultAccount(account, address(v()));
         (VaultAccount memory liquidatorAccount) = Deployments.NOTIONAL.getVaultAccount(liquidator, address(v()));
@@ -530,17 +548,99 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
         vm.skip(!hasWithdrawRequests());
         maturityIndex = uint8(bound(maturityIndex, 0, 2));
         address account = makeAddr("account");
+        address liquidator = makeAddr("liquidator");
         uint256 maturity = maturities[maturityIndex];
         uint256 vaultShares = enterVaultLiquidation(account, maturity);
 
         vm.prank(account);
-        v().initiateWithdraw();
+        v().initiateWithdraw("");
 
         _changeTokenPrice(
             withdrawLiquidationDiscount,
             BaseStakingHarness(address(harness)).withdrawToken(address(v()))
         );
-        address liquidator = _liquidateAccount(account);
+        int256 vaultShareValueBefore = v().convertStrategyToUnderlying(account, vaultShares, maturity);
+        _liquidateAccount(account, liquidator);
+
+        (VaultAccount memory vaultAccount) = Deployments.NOTIONAL.getVaultAccount(account, address(v()));
+        (VaultAccount memory liquidatorAccount) = Deployments.NOTIONAL.getVaultAccount(liquidator, address(v()));
+
+        // Check that the total value of the vault shares is approximately the same as before after the request has
+        // been split
+        int256 accountVaultShareValueAfter = v().convertStrategyToUnderlying(account, vaultAccount.vaultShares, maturity);
+        int256 liquidatorVaultShareValueAfter = v().convertStrategyToUnderlying(liquidator, liquidatorAccount.vaultShares, maturity);
+        assertApproxEqRel(liquidatorVaultShareValueAfter + accountVaultShareValueAfter, vaultShareValueBefore, 0.0001e18, "Vault share value after split");
+
+        uint256 liquidatedAmount = vaultShares - vaultAccount.vaultShares;
+        assertGt(liquidatedAmount, 0, "Liquidated amount should be larger than 0");
+        assertEq(liquidatorAccount.vaultShares, liquidatedAmount, "Liquidator account should receive liquidated amount");
+
+        WithdrawRequest memory w = v().getWithdrawRequest(account);
+        // withdraw request should be unchanged after liquidation
+        assertTrue(w.requestId != 0, "Account withdraw request ID should not be zero");
+        assertEq(w.vaultShares, vaultShares - liquidatedAmount, "Account withdraw request vault shares should match remaining shares");
+        assertEq(w.hasSplit, true, "Account withdraw request should be marked as split");
+
+        (SplitWithdrawRequest memory s) = v().getSplitWithdrawRequest(w.requestId);
+
+        assertEq(s.totalVaultShares, vaultShares, "Split withdraw request total vault shares should match original amount");
+        assertEq(s.finalized, false, "Split withdraw request should not be finalized");
+
+        w = v().getWithdrawRequest(liquidator);
+        assertTrue(w.requestId != 0, "Liquidator withdraw request ID should not be zero");
+        assertEq(w.vaultShares, liquidatedAmount, "Liquidator withdraw request vault shares should match liquidated amount");
+        assertEq(w.hasSplit, true, "Liquidator withdraw request should be marked as split");
+    }
+
+    function test_RevertIf_deleverageAccount_splitAccountWithdrawRequest_liquidatorHasVaultShares() public {
+        vm.skip(!hasWithdrawRequests());
+        address account = makeAddr("account");
+        address liquidator = makeAddr("liquidator");
+        uint256 maturity = maturities[0];
+        uint256 vaultShares = enterVaultLiquidation(account, maturity);
+        // Liquidator has vault shares and some amount of leverage
+        uint256 liquidatorVaultShares = enterVaultLiquidation(liquidator, maturity);
+
+        // Liquidate the account and check
+        vm.prank(account);
+        v().initiateWithdraw("");
+
+        _changeTokenPrice(
+            withdrawLiquidationDiscount,
+            BaseStakingHarness(address(harness)).withdrawToken(address(v()))
+        );
+        (/* */, int256[3] memory maxDeposit, /* */) = Deployments.NOTIONAL.getVaultAccountHealthFactors(
+            account, address(vault)
+        );
+
+        uint256 maxDepositExternal = uint256(maxDeposit[0]) * precision / 1e8;
+        dealTokensAndApproveNotional(maxDepositExternal * 2, liquidator);
+        uint256 msgValue = address(primaryBorrowToken) == Constants.ETH_ADDRESS ? maxDepositExternal  : 0;
+        vm.prank(liquidator);
+        vm.expectRevert("Invalid Liquidator");
+        v().deleverageAccount{value: msgValue}(account, address(v()), liquidator, 0, maxDeposit[0]);
+    }
+
+    function test_deleverageAccount_splitAccountWithdrawRequest_multipleLiquidations() public {
+        vm.skip(!hasWithdrawRequests());
+        address account = makeAddr("account");
+        address liquidator = makeAddr("liquidator");
+        uint256 maturity = maturities[0];
+        VaultConfig memory c = Deployments.NOTIONAL.getVaultConfig(address(vault));
+        uint256 depositAmountExternal = 5 * uint256(c.minAccountBorrowSize) * precision / 1e8;
+        uint256 cr = uint256(c.minCollateralRatio) + 10 * maxRelEntryValuation;
+        // TODO: need to increase the amount to ensure that we still have some debt after the first liquidation
+        uint256 vaultShares = enterVaultLiquidation(account, maturity, cr, depositAmountExternal);
+
+        // Liquidate the account and check
+        vm.prank(account);
+        v().initiateWithdraw("");
+
+        _changeTokenPrice(
+            withdrawLiquidationDiscount,
+            BaseStakingHarness(address(harness)).withdrawToken(address(v()))
+        );
+        _liquidateAccount(account, liquidator);
 
         (VaultAccount memory vaultAccount) = Deployments.NOTIONAL.getVaultAccount(account, address(v()));
         (VaultAccount memory liquidatorAccount) = Deployments.NOTIONAL.getVaultAccount(liquidator, address(v()));
@@ -551,14 +651,39 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
 
         WithdrawRequest memory w = v().getWithdrawRequest(account);
         // withdraw request should be unchanged after liquidation
-        assertTrue(w.requestId != 0, "11");
-        assertEq(w.vaultShares, vaultShares - liquidatedAmount, "22");
-        assertEq(w.hasSplit, true, "33");
+        assertTrue(w.requestId != 0, "Account withdraw request ID should not be zero");
+        assertEq(w.vaultShares, vaultShares - liquidatedAmount, "Account withdraw request vault shares should match remaining shares");
+        assertEq(w.hasSplit, true, "Account withdraw request should be marked as split");
 
         (SplitWithdrawRequest memory s) = v().getSplitWithdrawRequest(w.requestId);
 
-        assertEq(s.totalVaultShares, vaultShares, "7");
-        assertEq(s.finalized, false, "8");
+        assertEq(s.totalVaultShares, vaultShares, "Split withdraw request total vault shares should match original amount");
+        assertEq(s.finalized, false, "Split withdraw request should not be finalized");
+
+        w = v().getWithdrawRequest(liquidator);
+        assertTrue(w.requestId != 0, "Liquidator withdraw request ID should not be zero");
+        assertEq(w.vaultShares, liquidatedAmount, "Liquidator withdraw request vault shares should match liquidated amount");
+        assertEq(w.hasSplit, true, "Liquidator withdraw request should be marked as split");
+        assertGt(liquidatorAccount.vaultShares, 0, "Liquidator account should have non-zero vault shares");
+
+        // Liquidator cannot initiate a second withdraw request
+        vm.prank(liquidator);
+        vm.expectRevert("Existing Request");
+        v().initiateWithdraw("");
+
+        // Reduce the token price further to force liquidation of the liquidator, this
+        // price change is relative to the initial price change.
+        _changeTokenPrice(
+            splitWithdrawPriceDecrease,
+            BaseStakingHarness(address(harness)).withdrawToken(address(v()))
+        );
+        _liquidateAccount(account, liquidator);
+
+        // Liquidator's withdraw request should have increased
+        WithdrawRequest memory w2 = v().getWithdrawRequest(liquidator);
+        assertEq(w2.requestId, w.requestId, "Liquidator's withdraw request ID should remain unchanged after second liquidation");
+        assertGt(w2.vaultShares, w.vaultShares, "Liquidator's withdraw request vault shares should increase after second liquidation");
+        assertEq(w2.hasSplit, w.hasSplit, "Liquidator's withdraw request hasSplit status should remain unchanged after second liquidation");
     }
 
     function test_finalizeWithdrawsManual(
@@ -596,7 +721,7 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
             _forceWithdraw(account);
         } else {
             vm.prank(account);
-            v().initiateWithdraw();
+            v().initiateWithdraw("");
         }
         WithdrawRequest memory w = v().getWithdrawRequest(account);
 
@@ -657,11 +782,10 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
         setPriceOracle(token, address(mock));
     }
 
-    function _liquidateAccount(address account) internal returns (address liquidator) {
+    function _liquidateAccount(address account, address liquidator) internal {
         (/* */, int256[3] memory maxDeposit, /* */) = Deployments.NOTIONAL.getVaultAccountHealthFactors(
             account, address(vault)
         );
-        liquidator = makeAddr("liquidator");
 
         uint256 maxDepositExternal = uint256(maxDeposit[0]) * precision / 1e8;
         dealTokensAndApproveNotional(maxDepositExternal * 2, liquidator);
@@ -686,7 +810,7 @@ abstract contract BaseStakingTest is BaseAcceptanceTest {
         if (expectRevert) {
             vm.expectRevert(error);
         }
-        v().forceWithdraw(account);
+        v().forceWithdraw(account, "");
         vm.stopPrank();
     }
 
